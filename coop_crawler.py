@@ -2,18 +2,22 @@
 Co.op Online beer products crawler.
 
 - URL: https://cooponline.vn/c/bia
-- Khi mở trang sẽ hiện popup chọn địa chỉ:
+- When opening the page, a location popup is shown:
     + Form: provinceCode, districtCode, wardCode, address
-    + Sau đó danh sách siêu thị (class=css-ot6l9u)
-  => Script sẽ auto chọn Hồ Chí Minh (nếu có), quận/huyện/phường đầu tiên,
-     address = "1", chọn 1 siêu thị bất kỳ rồi mới crawl list bia.
+    + Then a list of stores (class='css-ot6l9u')
+  => The script will auto-select:
+        - Ho Chi Minh City (if available),
+        - the first district/ward,
+        - address = "1",
+        - any store in the list,
+     then start crawling the beer list.
 
-- Mỗi product là 1 thẻ:
+- Each product is a card:
     <div class="product-card ..." data-content-region-name="itemProductResult">
         <a href="/bia-corona-extra-24-x-250ml--s250101070"> ... </a>
     </div>
 
-Schema (không dùng pack_type):
+Unified schema (no pack_type):
     source,
     code,
     name,
@@ -30,6 +34,10 @@ Schema (không dùng pack_type):
     note,
     crawl_date,
     product_key
+
+If this module is executed directly, it will:
+    - Run the Co.op crawler.
+    - Export data to coop_beer_prices_YYYYMMDD.csv.
 """
 
 from __future__ import annotations
@@ -37,15 +45,14 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import List, Dict
+from typing import Any, Dict, List
 from urllib.parse import urljoin
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-
 
 from helpers import (
     extract_price_int,
@@ -69,30 +76,63 @@ ITEM_SELECTOR = "div.product-card[data-content-region-name='itemProductResult']"
 ALLOWED_PACKINGS = {"1", "4", "6", "12", "20", "24"}
 
 
-def _build_driver(headless: bool = False):
+# ---------------------------------------------------------------------
+# Driver helpers
+# ---------------------------------------------------------------------
+def _build_driver(headless: bool = False) -> webdriver.Chrome:
     """
-    Initialize Chrome WebDriver using a common helper.
+    Initialize Chrome WebDriver using the shared helper.
+
+    Parameters
+    ----------
+    headless : bool
+        Run browser in headless mode if True.
+
+    Returns
+    -------
+    webdriver.Chrome
     """
     return build_chrome_driver(headless=headless)
 
 
-def _safe_click_element(driver: webdriver.Chrome, el, desc: str) -> bool:
+def _safe_click_element(
+    driver: webdriver.Chrome,
+    el: Any,
+    desc: str,
+) -> bool:
     """
-    Scroll to the center of the screen and click the element safely.
+    Scroll element into view and click it safely.
+
+    Parameters
+    ----------
+    driver : webdriver.Chrome
+    el : Any
+        Web element to click.
+    desc : str
+        Description for logging.
+
+    Returns
+    -------
+    bool
+        True if click succeeded, False otherwise.
     """
     try:
         driver.execute_script(
-            "arguments[0].scrollIntoView({block: 'center'});", el
+            "arguments[0].scrollIntoView({block: 'center'});",
+            el,
         )
         time.sleep(0.2)
+
         try:
             el.click()
         except Exception:
             driver.execute_script("arguments[0].click();", el)
+
         LOGGER.info("Clicked: %s", desc)
         return True
+
     except Exception as exc:
-        LOGGER.warning("Lỗi khi click %s: %s", desc, exc)
+        LOGGER.warning("Error clicking %s: %s", desc, exc)
         return False
 
 
@@ -101,28 +141,68 @@ def _click_option_by_text(
     option_text: str,
     timeout: int = 20,
 ) -> bool:
+    """
+    Find and click an option within Co.op dropdowns by visible text.
+
+    Parameters
+    ----------
+    driver : webdriver.Chrome
+    option_text : str
+        Visible label of the option.
+    timeout : int
+        Max wait time in seconds.
+
+    Returns
+    -------
+    bool
+        True if the option was clicked, False otherwise.
+    """
     wait = WebDriverWait(driver, timeout)
     xpath = (
         "//div[contains(@class,'css-6sgxfm')]"
-        "[.//div[contains(@class,'css-1k26lhb') and normalize-space()=%s]]"
+        "[.//div[contains(@class,'css-1k26lhb') "
+        "and normalize-space()=%s]]"
     ) % repr(option_text)
 
     try:
         el = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
         return _safe_click_element(driver, el, f"option '{option_text}'")
+
     except TimeoutException:
-        LOGGER.warning("Timeout khi tìm option '%s'", option_text)
+        LOGGER.warning("Timeout while locating option '%s'.", option_text)
         return False
+
     except Exception as exc:
-        LOGGER.warning("Lỗi khi click option '%s': %s", option_text, exc)
+        LOGGER.warning("Error clicking option '%s': %s", option_text, exc)
         return False
 
 
-def _handle_location_popup(driver: webdriver.Chrome, timeout: int = 40) -> None:
-    LOGGER.info("Handling location popup (by index dropdown)...")
+# ---------------------------------------------------------------------
+# Location popup handling
+# ---------------------------------------------------------------------
+def _handle_location_popup(
+    driver: webdriver.Chrome,
+    timeout: int = 40,
+) -> None:
+    """
+    Handle Co.op Online location popup.
+
+    The function:
+        - Selects province, district, ward.
+        - Fills address field.
+        - Chooses a store.
+        - Clicks "Mua sắm ngay" (Start shopping).
+
+    Parameters
+    ----------
+    driver : webdriver.Chrome
+    timeout : int
+        Max wait time for popup elements.
+    """
+    LOGGER.info("Handling location popup (dropdown-based)...")
     wait = WebDriverWait(driver, timeout)
 
-    # Chờ form hiện các ô chọn (css-6sgxfm)
+    # Wait for dropdown containers
     try:
         dropdown_xpath = (
             "//div[contains(@class,'css-6sgxfm')]"
@@ -132,27 +212,30 @@ def _handle_location_popup(driver: webdriver.Chrome, timeout: int = 40) -> None:
         dropdowns = wait.until(
             EC.presence_of_all_elements_located((By.XPATH, dropdown_xpath))
         )
-        LOGGER.info("Tìm thấy %d ô 'css-6sgxfm' trong popup.", len(dropdowns))
+        LOGGER.info("Found %d 'css-6sgxfm' dropdown containers.", len(dropdowns))
     except TimeoutException:
-        LOGGER.warning("Address form not found (css-6sgxfm). Ignore popup.")
+        LOGGER.warning("Address form not found (css-6sgxfm). Skipping popup.")
         return
 
     if len(dropdowns) < 3:
         LOGGER.warning(
-            "Number of dropdowns < 3 (len=%d), DOM may be different. Ignore popup.",
+            "Number of dropdowns < 3 (len=%d). DOM may have changed, "
+            "skipping popup handling.",
             len(dropdowns),
         )
         return
 
     def open_and_select(idx: int, desc: str, option_text: str) -> None:
+        """
+        Open dropdown by index and select the desired option.
+        """
         try:
-            # Re-find all dropdowns each time to avoid stale elements
             dropdowns_local = wait.until(
                 EC.presence_of_all_elements_located((By.XPATH, dropdown_xpath))
             )
             if idx >= len(dropdowns_local):
                 LOGGER.warning(
-                    "Not enough dropdowns to select %s (idx=%d, len=%d)",
+                    "Not enough dropdowns to select %s (idx=%d, len=%d).",
                     desc,
                     idx,
                     len(dropdowns_local),
@@ -160,37 +243,44 @@ def _handle_location_popup(driver: webdriver.Chrome, timeout: int = 40) -> None:
                 return
 
             field_el = dropdowns_local[idx]
-            _safe_click_element(driver, field_el, f"open dropdown {desc}")
+            _safe_click_element(driver, field_el, f"open {desc} dropdown")
             time.sleep(0.5)
 
             clicked = _click_option_by_text(driver, option_text, timeout=20)
             if not clicked:
                 LOGGER.warning(
-                    "Cannot select option '%s' cho %s.", option_text, desc
+                    "Could not select option '%s' for %s.",
+                    option_text,
+                    desc,
                 )
             else:
                 time.sleep(0.7)
-        except Exception as exc:
-            LOGGER.warning("Failed %s: %s", desc, exc)
 
+        except Exception as exc:
+            LOGGER.warning("Failed to select %s: %s", desc, exc)
+
+    # Province
     open_and_select(
         idx=0,
         desc="Province",
         option_text="Thành phố Hồ Chí Minh",
     )
 
+    # District
     open_and_select(
         idx=1,
         desc="District",
         option_text="Huyện Bình Chánh",
     )
 
+    # Ward
     open_and_select(
         idx=2,
         desc="Ward",
         option_text="Xã Bình Hưng",
     )
 
+    # Address field
     try:
         try:
             addr_input = wait.until(
@@ -207,14 +297,17 @@ def _handle_location_popup(driver: webdriver.Chrome, timeout: int = 40) -> None:
                     )
                 )
             )
-        _safe_click_element(driver, addr_input, "input address")
+
+        _safe_click_element(driver, addr_input, "address input")
         addr_input.clear()
         addr_input.send_keys("1")
         LOGGER.info("Filled address = '1'.")
         time.sleep(0.5)
-    except Exception as exc:
-        LOGGER.warning("Failed: %s", exc)
 
+    except Exception as exc:
+        LOGGER.warning("Failed to fill address field: %s", exc)
+
+    # Confirm button
     try:
         confirm_xpath = (
             "//button[contains(normalize-space(),'Xác nhận') "
@@ -227,10 +320,13 @@ def _handle_location_popup(driver: webdriver.Chrome, timeout: int = 40) -> None:
             _safe_click_element(driver, confirm_btn, "button 'Xác nhận'")
             time.sleep(2)
         except TimeoutException:
-            LOGGER.info("Don't see 'Confirm' button, maybe form auto move to next step.")
+            LOGGER.info(
+                "No 'Xác nhận' button found, popup might auto advance."
+            )
     except Exception as exc:
-        LOGGER.warning("Error processing 'Confirm' button': %s", exc)
+        LOGGER.warning("Error processing 'Xác nhận' button: %s", exc)
 
+    # Store selection
     try:
         store_xpath = (
             "//span[contains(@class,'css-1vgbj23') and "
@@ -247,11 +343,13 @@ def _handle_location_popup(driver: webdriver.Chrome, timeout: int = 40) -> None:
             "store 'Co.opXtra Tạ Quang Bửu'",
         )
         time.sleep(2)
-    except TimeoutException:
-        LOGGER.warning("Timeout'.")
-    except Exception as exc:
-        LOGGER.warning("Fail: %s", exc)
 
+    except TimeoutException:
+        LOGGER.warning("Timeout while selecting store.")
+    except Exception as exc:
+        LOGGER.warning("Error selecting store: %s", exc)
+
+    # "Mua sắm ngay" button
     try:
         buy_btn_xpath = (
             "//button[.//div[contains(@class,'button-text') and "
@@ -262,23 +360,37 @@ def _handle_location_popup(driver: webdriver.Chrome, timeout: int = 40) -> None:
         )
         _safe_click_element(driver, buy_btn, "button 'Mua sắm ngay'")
         time.sleep(3)
+
     except TimeoutException:
-        LOGGER.warning("Timeout 'Mua sắm ngay'.")
+        LOGGER.warning("Timeout waiting for 'Mua sắm ngay' button.")
     except Exception as exc:
-        LOGGER.warning("Failed 'Mua sắm ngay': %s", exc)
+        LOGGER.warning("Error clicking 'Mua sắm ngay': %s", exc)
 
-    LOGGER.info("Done handling location popup.")
+    LOGGER.info("Location popup handling completed.")
 
 
-
+# ---------------------------------------------------------------------
+# Scrolling / pagination
+# ---------------------------------------------------------------------
 def _scroll_page(
     driver: webdriver.Chrome,
     max_clicks: int = 50,
     wait_seconds: int = 5,
 ) -> None:
+    """
+    Scroll page to the bottom and click 'View more products' repeatedly.
 
+    Parameters
+    ----------
+    driver : webdriver.Chrome
+    max_clicks : int
+        Maximum times to attempt clicking the 'View more products' button.
+    wait_seconds : int
+        Sleep time between actions (seconds).
+    """
     LOGGER.info(
-        "Start scrolling and click 'View more products' (max %d times)...",
+        "Begin scrolling and clicking 'View more products' "
+        "(max %d times)...",
         max_clicks,
     )
 
@@ -287,9 +399,11 @@ def _scroll_page(
 
     while click_count < max_clicks:
         try:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            driver.execute_script(
+                "window.scrollTo(0, document.body.scrollHeight);"
+            )
         except Exception as exc:
-            LOGGER.warning("Lỗi khi scroll: %s", exc)
+            LOGGER.warning("Error while scrolling: %s", exc)
         time.sleep(wait_seconds)
 
         try:
@@ -309,39 +423,59 @@ def _scroll_page(
                 max_clicks,
             )
             time.sleep(wait_seconds)
+
         except TimeoutException:
-            LOGGER.info("No more 'View more products' button. Stop.")
+            LOGGER.info("No more 'View more products' button. Stopping.")
             break
+
         except Exception as exc:
             LOGGER.warning(
-                "Error when clicking 'View more products' (time %d): %s",
+                "Error clicking 'View more products' (attempt %d): %s",
                 click_count + 1,
                 exc,
             )
             break
 
         try:
-            new_height = driver.execute_script("return document.body.scrollHeight;")
+            new_height = driver.execute_script(
+                "return document.body.scrollHeight;"
+            )
         except Exception:
             new_height = last_height
 
         if new_height == last_height:
-            LOGGER.info(
-                "Page height does not change after click, stop scrolling."
-            )
+            LOGGER.info("Page height did not change. Stop scrolling.")
             break
 
         last_height = new_height
 
     LOGGER.info(
-        "Finish scrolling and click 'View more products'. Total number of clicks: %d",
+        "Finished scrolling / clicking 'View more products'. "
+        "Total clicks: %d",
         click_count,
     )
 
-def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
+
+# ---------------------------------------------------------------------
+# Main crawler
+# ---------------------------------------------------------------------
+def crawl_coop(headless: bool = False) -> List[Dict[str, Any]]:
+    """
+    Crawl beer products from Co.op Online.
+
+    Parameters
+    ----------
+    headless : bool
+        Run browser in headless mode if True.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of product dictionaries following the unified schema.
+    """
     LOGGER.info("Starting Co.op Online crawler...")
     driver = _build_driver(headless=headless)
-    products: List[Dict[str, object]] = []
+    products: List[Dict[str, Any]] = []
 
     try:
         LOGGER.info("Opening Co.op URL: %s", CATEGORY_URL)
@@ -351,19 +485,22 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
         _handle_location_popup(driver, timeout=40)
 
         time.sleep(5)
-        LOGGER.info("Bắt đầu scroll & click 'Xem thêm sản phẩm' để load toàn bộ sản phẩm...")
+        LOGGER.info(
+            "Start scrolling & clicking 'Xem thêm sản phẩm' "
+            "to load all products..."
+        )
         _scroll_page(driver, max_clicks=50, wait_seconds=5)
-        LOGGER.info("Hoàn thành load sản phẩm, bắt đầu lấy product-card.")
-
-
+        LOGGER.info("Finished loading products. Start parsing product cards.")
 
         try:
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, ITEM_SELECTOR))
             )
-            LOGGER.info("Product cards loaded.")
+            LOGGER.info("Product cards are present in DOM.")
         except Exception:
-            LOGGER.warning("Không tìm thấy product-card trong timeout.")
+            LOGGER.warning(
+                "Could not find product-card elements within timeout."
+            )
 
         elements = driver.find_elements(By.CSS_SELECTOR, ITEM_SELECTOR)
         LOGGER.info("Found %d Co.op product items.", len(elements))
@@ -372,9 +509,9 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
 
         for idx, card in enumerate(elements, start=1):
             try:
-                # ------------------------
+                # ---------------------------------------------------------
                 # href, url, code
-                # ------------------------
+                # ---------------------------------------------------------
                 try:
                     a_tag = card.find_element(By.CSS_SELECTOR, "a[href]")
                     href = a_tag.get_attribute("href") or ""
@@ -390,9 +527,9 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                     except Exception:
                         code = ""
 
-                # ------------------------
+                # ---------------------------------------------------------
                 # brand, name, unit
-                # ------------------------
+                # ---------------------------------------------------------
                 try:
                     brand_el = card.find_element(
                         By.CSS_SELECTOR, "div.product-brand-name"
@@ -409,8 +546,11 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
 
                 unit = ""
                 try:
-                    # "Đơn vị tính: Thùng"
-                    unit_div = card.find_element(By.CSS_SELECTOR, "div.css-1f5a6jh")
+                    # Example: "Đơn vị tính: Thùng"
+                    unit_div = card.find_element(
+                        By.CSS_SELECTOR,
+                        "div.css-1f5a6jh",
+                    )
                     unit_text = unit_div.text.strip()
                     if ":" in unit_text:
                         unit = unit_text.split(":", 1)[1].strip()
@@ -422,9 +562,9 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                 if not unit and name:
                     unit = extract_unit(name)
 
-                # ------------------------
-                # Giá hiện tại & giá gốc
-                # ------------------------
+                # ---------------------------------------------------------
+                # Prices: current & original
+                # ---------------------------------------------------------
                 price_after_text = ""
                 try:
                     latest_price_div = card.find_element(
@@ -449,16 +589,19 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
 
                 price = price_original_int or price_after_int
 
-                # ------------------------
-                # Promo text & note
-                # ------------------------
-                promo_text_parts = []
+                # ---------------------------------------------------------
+                # Promotion text & note
+                # ---------------------------------------------------------
+                promo_text_parts: List[str] = []
 
                 # "TIẾT KIỆM <xxx ₫>"
                 try:
                     tiet_kiem_value_div = card.find_element(
                         By.XPATH,
-                        ".//div[contains(@class,'css-zb7zul')]//div[contains(@class,'css-1rdv2qd')]",
+                        (
+                            ".//div[contains(@class,'css-zb7zul')]"
+                            "//div[contains(@class,'css-1rdv2qd')]"
+                        ),
                     )
                     tiet_kiem_value = tiet_kiem_value_div.text.strip()
                     if tiet_kiem_value:
@@ -466,10 +609,11 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                 except Exception:
                     pass
 
-                # phần trăm -12% cạnh giá gốc
+                # Percentage badge, e.g. '-12%'
                 try:
                     percent_div = card.find_element(
-                        By.CSS_SELECTOR, "div.css-9n4x1v"
+                        By.CSS_SELECTOR,
+                        "div.css-9n4x1v",
                     )
                     percent_text = percent_div.text.strip()
                     if percent_text:
@@ -477,16 +621,23 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                 except Exception:
                     pass
 
-                note = ""  # hiện chưa thấy note riêng trên Co.op (voucher, etc.)
+                note = ""  # No dedicated note observed on Co.op yet
 
                 promo_text_raw = " ".join(promo_text_parts).strip()
                 promotion = extract_promotion_from_text(promo_text_raw)
 
-                # Nếu không crawl được promotion nhưng có chênh lệch giá,
-                # tự tính % giảm từ price và price_after_promotion
-                if (not promotion) and price and price_after_int and price > price_after_int:
+                # If no promotion parsed but price difference exists,
+                # compute discount percentage.
+                if (
+                    not promotion
+                    and price
+                    and price_after_int
+                    and price > price_after_int
+                ):
                     try:
-                        discount = (price - price_after_int) * 100.0 / float(price)
+                        discount = (price - price_after_int) * 100.0 / float(
+                            price
+                        )
                         discount = round(discount, 2)
                         if abs(discount - int(discount)) < 1e-6:
                             promotion = f"{int(discount)}%"
@@ -495,9 +646,9 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                     except Exception:
                         pass
 
-                # ------------------------
-                # Text-based parsing từ name
-                # ------------------------
+                # ---------------------------------------------------------
+                # Text-based parsing from name
+                # ---------------------------------------------------------
                 packing = extract_packing_quantity(name) if name else ""
                 capacity = extract_capacity(name) if name else ""
 
@@ -505,11 +656,9 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                     brand = extract_brand(name)
 
                 normalized_name = normalize_name(name) if name else ""
-                size = ""  # chưa dùng
+                size = ""  # Not used for now
 
-                if not packing:
-                    packing = "1"
-                elif packing not in ALLOWED_PACKINGS:
+                if not packing or packing not in ALLOWED_PACKINGS:
                     packing = "1"
 
                 product_key = make_product_key(
@@ -518,7 +667,7 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                     packing=packing,
                 )
 
-                product = {
+                product: Dict[str, Any] = {
                     "source": "cooponline",
                     "code": code,
                     "name": name,
@@ -540,20 +689,49 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, object]]:
                 products.append(product)
 
             except Exception as exc:
-                LOGGER.warning("Lỗi khi parse product index %d: %s", idx, exc)
+                LOGGER.warning(
+                    "Error parsing Co.op product index %d: %s",
+                    idx,
+                    exc,
+                )
                 continue
 
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
     LOGGER.info("Co.op crawl finished. Total products: %d", len(products))
     return products
 
 
+# ---------------------------------------------------------------------
+# Standalone execution (auto-export Co.op CSV)
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
     result = crawl_coop(headless=False)
     print(f"Crawled {len(result)} products from Co.op Online.")
+
+    if not result:
+        print("No products found, CSV will not be generated.")
+    else:
+        import csv
+
+        today = datetime.now().strftime("%Y%m%d")
+        output_path = f"coop_beer_prices_{today}.csv"
+
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=result[0].keys())
+            writer.writeheader()
+            writer.writerows(result)
+
+        print(
+            f"Co.op crawler finished → {len(result)} products "
+            f"saved to {output_path}"
+        )

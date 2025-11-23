@@ -8,14 +8,14 @@ Included sources:
     - Kingfood Mart (kingfood)
     - Co.op Online (coop)
 
-Examples:
-    # Crawl all sources, show Chrome
+Usage examples:
+    # Crawl all sources, show Chrome window
     python main.py --sources all
 
     # Only crawl BHX + Co.op, headless
     python main.py --sources bhx coop --headless
 
-    # Crawl Mega + Lotte, write in file custom
+    # Crawl Mega + Lotte, write to a custom file
     python main.py --sources mega lotte --output mega_lotte.csv
 """
 
@@ -33,7 +33,9 @@ from lotte_crawler import crawl_lotte
 from kingfood_crawler import crawl_kingfood
 from coop_crawler import crawl_coop
 
-# Unified CSV schema (must match all crawlers)
+LOGGER = logging.getLogger(__name__)
+
+# Unified CSV schema (must be consistent across all crawlers)
 FIELDNAMES = [
     "source",
     "code",
@@ -59,27 +61,47 @@ def write_products_to_csv(
     output_path: str,
 ) -> None:
     """
-    Write list of product dictionaries to CSV following FIELDNAMES.
+    Write a list of product dictionaries to a CSV file.
+
+    The CSV schema is defined by FIELDNAMES. Missing keys in each product
+    dictionary are safely filled with an empty string.
+
+    Parameters
+    ----------
+    products:
+        List of product records, each represented as a dictionary.
+    output_path:
+        Path to the CSV file to be created or overwritten.
     """
     with open(output_path, "w", newline="", encoding="utf-8-sig") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=FIELDNAMES)
         writer.writeheader()
 
         for item in products:
-            # Ensure missing keys do NOT crash the writer
+            # Ensure missing keys do not break the writer
             row = {field: item.get(field, "") for field in FIELDNAMES}
             writer.writerow(row)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Multi-source beer crawling.")
+    """
+    Parse command-line arguments for the beer crawling pipeline.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments including sources, headless flag, and output path.
+    """
+    parser = argparse.ArgumentParser(
+        description="Multi-source beer crawling CLI tool.",
+    )
     parser.add_argument(
         "--sources",
         nargs="+",
         default=["all"],
         help=(
             "List of sources to crawl. "
-            "Allowed: bhx, mega, lotte, kingfood, coop, all"
+            "Allowed values: bhx, mega, lotte, kingfood, coop, all."
         ),
     )
     parser.add_argument(
@@ -90,13 +112,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=None,
-        help="Output CSV path. "
-             "Default: output/all_beer_prices_YYYYMMDD.csv",
+        help=(
+            "Output CSV path. "
+            "Default: output/all_beer_prices_YYYYMMDD.csv"
+        ),
     )
     return parser.parse_args()
 
 
 def main() -> None:
+    """
+    Run the multi-source beer crawling pipeline.
+
+    Steps:
+        1. Parse CLI arguments.
+        2. Initialize logging.
+        3. Resolve list of sources to crawl.
+        4. Execute each crawler and aggregate products.
+        5. Export combined results to a unified CSV file.
+    """
     args = parse_args()
 
     logging.basicConfig(
@@ -104,11 +138,12 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    logger = logging.getLogger(__name__)
-    logger.info("=== Starting multi-source beer crawling pipeline ===")
+    LOGGER.info(
+        "=== Starting multi-source beer crawling pipeline ===",
+    )
 
-    # Resolve sources
-    srcs = [s.lower() for s in args.sources]
+    # Normalize and resolve sources
+    srcs = [src.lower() for src in args.sources]
     if "all" in srcs:
         srcs = ["bhx", "mega", "lotte", "kingfood", "coop"]
 
@@ -126,25 +161,25 @@ def main() -> None:
     for src in srcs:
         func = crawler_map.get(src)
         if func is None:
-            logger.warning("Unknown source '%s', skip.", src)
+            LOGGER.warning("Unknown source '%s'. Skipping.", src)
             continue
 
-        logger.info("Running crawler for source: %s", src)
+        LOGGER.info("Running crawler for source: %s", src)
         products = func(headless=args.headless)
-        logger.info("Source %s: %d products collected.", src, len(products))
+        LOGGER.info("Source %s: %d products collected.", src, len(products))
         all_products.extend(products)
 
-    logger.info("Total combined products: %d", len(all_products))
+    LOGGER.info("Total combined products: %d", len(all_products))
 
-    # Default output file
+    # Default output file path
     if not args.output:
         today = datetime.now().strftime("%Y%m%d")
         args.output = f"output/all_beer_prices_{today}.csv"
 
     write_products_to_csv(all_products, args.output)
-    logger.info("Exported combined CSV to: %s", args.output)
+    LOGGER.info("Exported combined CSV to: %s", args.output)
 
-    logger.info("=== Crawling pipeline completed successfully ===")
+    LOGGER.info("=== Crawling pipeline completed successfully ===")
 
 
 if __name__ == "__main__":

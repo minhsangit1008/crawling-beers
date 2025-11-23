@@ -2,12 +2,13 @@
 Kingfood Mart beer products crawler.
 
 - URL: https://kingfoodmart.com/bia
-- Sử dụng undetected_chromedriver để tránh bị chặn bot.
-- Dùng nút "Xem thêm sản phẩm" để load tất cả sản phẩm.
-- Mỗi product là 1 thẻ:
+- Uses undetected_chromedriver to reduce bot detection.
+- Uses the "Xem thêm sản phẩm" button to load all products.
+- Each product is an anchor tag:
+
     <a class="pt-2" href="/bia-co-con/...">...</a>
 
-Schema (không dùng pack_type):
+Unified schema (no pack_type):
     source,
     code,
     name,
@@ -24,6 +25,10 @@ Schema (không dùng pack_type):
     note,
     crawl_date,
     product_key
+
+If this module is executed directly, it will:
+    - Run the Kingfood crawler.
+    - Export data to kingfood_beer_prices_YYYYMMDD.csv.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import List, Dict
+from typing import Any, Dict, List
 from urllib.parse import urljoin
 
 import undetected_chromedriver as uc
@@ -55,28 +60,42 @@ LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://kingfoodmart.com"
 CATEGORY_URL = "https://kingfoodmart.com/bia"
 
-# XPATH cho product (ổn định hơn CSS class)
+# XPaths for product and "load more" button
 PRODUCT_XPATH = "//a[contains(@href, '/bia-co-con/')]"
-SEE_MORE_XPATH = "//button[.//span[contains(normalize-space(.), 'Xem thêm sản phẩm')]]"
+SEE_MORE_XPATH = (
+    "//button[.//span[contains(normalize-space(.), 'Xem thêm sản phẩm')]]"
+)
 
-# packing cho phép (giống BHX)
+# Allowed packings (same convention as BHX)
 ALLOWED_PACKINGS = {"1", "4", "6", "12", "20", "24"}
 
 
 class StealthChrome(uc.Chrome):
     """
-    Wrapper để tắt __del__ lỗi (WinError 6) của undetected_chromedriver trên Windows.
+    Wrapper around undetected_chromedriver.Chrome.
+
+    This class overrides __del__ to avoid noisy WinError 6 logs
+    on Windows. We explicitly call driver.quit() in the crawler
+    instead of relying on __del__.
     """
 
-    def __del__(self):
-        # Không gọi self.quit() ở đây, vì ta đã quit trong finally của crawl_kingfood
+    def __del__(self) -> None:
+        # Do not call self.quit() here to avoid errors on interpreter shutdown.
         pass
 
 
 def _build_driver(headless: bool = False) -> StealthChrome:
     """
-    Tạo UC Chrome driver.
-    headless=True có thể hoạt động, nhưng để debug nên để False.
+    Build and return an undetected Chrome driver.
+
+    Parameters
+    ----------
+    headless : bool
+        If True, run browser in headless mode.
+
+    Returns
+    -------
+    StealthChrome
     """
     if headless:
         driver = StealthChrome(headless=True)
@@ -87,10 +106,16 @@ def _build_driver(headless: bool = False) -> StealthChrome:
 
 def _click_until_no_more(driver: StealthChrome) -> None:
     """
-    Click nút "Xem thêm sản phẩm" cho đến khi KHÔNG còn nút nữa.
-    Không dùng fixed max_clicks, chỉ dừng khi:
-        - Không tìm được button nữa
-        - Hoặc button không click được (exception)
+    Click "Xem thêm sản phẩm" until there is no more button.
+
+    The loop stops when:
+        - The button cannot be found, or
+        - The button cannot be clicked (exception).
+
+    Parameters
+    ----------
+    driver : StealthChrome
+        WebDriver instance.
     """
     while True:
         try:
@@ -98,70 +123,64 @@ def _click_until_no_more(driver: StealthChrome) -> None:
                 EC.element_to_be_clickable((By.XPATH, SEE_MORE_XPATH))
             )
         except Exception:
-            LOGGER.info("Không còn nút 'Xem thêm sản phẩm' nữa. Stop click.")
+            LOGGER.info(
+                "No more 'Xem thêm sản phẩm' button found. Stop clicking."
+            )
             break
 
         try:
-            LOGGER.info("Click nút 'Xem thêm sản phẩm'")
+            LOGGER.info("Clicking 'Xem thêm sản phẩm' button...")
             driver.execute_script("arguments[0].click();", btn)
-            # Đợi DOM append thêm sản phẩm, 1–2s là đủ với Kingfood
+            # Wait for DOM to append new products
             time.sleep(1.5)
         except Exception as exc:
-            LOGGER.warning("Lỗi khi click 'Xem thêm sản phẩm': %s", exc)
+            LOGGER.warning(
+                "Error while clicking 'Xem thêm sản phẩm': %s",
+                exc,
+            )
             break
 
 
-def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
+def crawl_kingfood(headless: bool = False) -> List[Dict[str, Any]]:
     """
-    Crawl dữ liệu bia từ Kingfood Mart.
+    Crawl beer products from Kingfood Mart.
+
+    Parameters
+    ----------
+    headless : bool
+        Run browser in headless mode if True.
 
     Returns
     -------
-    List[Dict[str, object]]:
-        Danh sách dict sản phẩm theo schema:
-        [
-            "source",
-            "code",
-            "name",
-            "brand",
-            "normalized_name",
-            "unit",
-            "packing",
-            "size",
-            "capacity",
-            "price",
-            "price_after_promotion",
-            "promotion",
-            "url",
-            "note",
-            "crawl_date",
-            "product_key",
-        ]
+    List[Dict[str, Any]]
+        List of product dictionaries following the common schema.
     """
     LOGGER.info("Starting Kingfood Mart crawler...")
     driver = _build_driver(headless=headless)
-    products: List[Dict[str, object]] = []
+    products: List[Dict[str, Any]] = []
 
     try:
         LOGGER.info("Opening Kingfood URL: %s", CATEGORY_URL)
         driver.get(CATEGORY_URL)
 
-        # Đợi trang load React/JS lần đầu
+        # Wait for initial React/JS loading
         time.sleep(8)
 
-        # Đảm bảo có ít nhất 1 sản phẩm trước khi bắt đầu click load thêm
+        # Ensure at least one product is visible before loading more
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, PRODUCT_XPATH))
             )
-            LOGGER.info("Initial products loaded.")
+            LOGGER.info("Initial Kingfood products loaded.")
         except Exception:
-            LOGGER.warning("Không tìm thấy sản phẩm bia ban đầu trong timeout.")
+            LOGGER.warning(
+                "No initial beer products found within timeout window."
+            )
 
-        # Click "Xem thêm sản phẩm" cho đến khi hết nút
+        # Click "Xem thêm sản phẩm" until there is no more button
         _click_until_no_more(driver)
 
-        # Sau khi load hết, lấy toàn bộ product
+        # After all products are loaded, collect them
         elements = driver.find_elements(By.XPATH, PRODUCT_XPATH)
         LOGGER.info("Found %d Kingfood product items.", len(elements))
 
@@ -169,9 +188,9 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
 
         for idx, element in enumerate(elements, start=1):
             try:
-                # ------------------------
+                # ---------------------------------------------------------
                 # href, url, code
-                # ------------------------
+                # ---------------------------------------------------------
                 href = element.get_attribute("href") or ""
                 url = urljoin(BASE_URL, href) if href else ""
 
@@ -182,23 +201,26 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
                     except Exception:
                         code = ""
 
-                # ------------------------
+                # ---------------------------------------------------------
                 # name
-                # ------------------------
+                # ---------------------------------------------------------
                 try:
                     name_el = element.find_element(By.CSS_SELECTOR, "h3[title]")
                     name = name_el.text.strip()
                 except Exception:
                     name = ""
 
-                # ------------------------
-                # Giá sau khuyến mãi (giá đang hiển thị)
-                # ------------------------
+                # ---------------------------------------------------------
+                # Price after promotion (displayed price)
+                # ---------------------------------------------------------
                 price_after_text = ""
                 try:
                     price_div = element.find_element(
                         By.XPATH,
-                        ".//div[contains(@class,'flex') and contains(@class,'items-baseline')]/div[1]",
+                        (
+                            ".//div[contains(@class,'flex') "
+                            "and contains(@class,'items-baseline')]/div[1]"
+                        ),
                     )
                     price_after_text = price_div.text.strip()
                 except Exception:
@@ -206,9 +228,9 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
 
                 price_after_int = extract_price_int(price_after_text)
 
-                # ------------------------
-                # Giá gốc (nếu có)
-                # ------------------------
+                # ---------------------------------------------------------
+                # Original price (if any)
+                # ---------------------------------------------------------
                 price_original_text = ""
                 try:
                     old_price_div = element.find_element(
@@ -222,15 +244,19 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
                 price_original_int = extract_price_int(price_original_text)
                 price = price_original_int or price_after_int
 
-                # ------------------------
-                # Promo text & note
-                # ------------------------
-                promo_text_parts = []
+                # ---------------------------------------------------------
+                # Promotion text & note
+                # ---------------------------------------------------------
+                promo_text_parts: List[str] = []
 
+                # Overlay discount e.g. "-20%"
                 try:
                     overlay_div = element.find_element(
                         By.XPATH,
-                        ".//div[contains(@class,'absolute') and contains(text(),'%')]",
+                        (
+                            ".//div[contains(@class,'absolute') "
+                            "and contains(text(),'%')]"
+                        ),
                     )
                     overlay_text = overlay_div.text.strip()
                     if overlay_text:
@@ -238,6 +264,7 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
                 except Exception:
                     overlay_text = ""
 
+                # "Tiết kiệm ..." text
                 try:
                     save_div = element.find_element(
                         By.XPATH,
@@ -253,7 +280,10 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
                 try:
                     note_container = element.find_element(
                         By.XPATH,
-                        ".//div[@class='mb-1' and contains(@style,'height: 16px')]",
+                        (
+                            ".//div[@class='mb-1' "
+                            "and contains(@style,'height: 16px')]"
+                        ),
                     )
                     note_text = note_container.text.strip()
                     if note_text:
@@ -265,30 +295,37 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
                 promo_text_raw = " ".join(promo_text_parts).strip()
                 promotion = extract_promotion_from_text(promo_text_raw)
 
-                if (not promotion) and price and price_after_int and price > price_after_int:
+                # If no parsed promotion but price dropped, compute % discount
+                if (
+                    not promotion
+                    and price
+                    and price_after_int
+                    and price > price_after_int
+                ):
                     try:
-                        discount = (price - price_after_int) * 100.0 / float(price)
+                        discount = (price - price_after_int) * 100.0 / float(
+                            price
+                        )
                         discount = round(discount, 2)
                         if abs(discount - int(discount)) < 1e-6:
                             promotion = f"{int(discount)}%"
                         else:
                             promotion = f"{discount}%"
                     except Exception:
+                        # Fallback to empty promotion on failure
                         pass
 
-                # ------------------------
-                # Text-based parsing from name
-                # ------------------------
+                # ---------------------------------------------------------
+                # Parsing from name (unit, packing, capacity, brand, etc.)
+                # ---------------------------------------------------------
                 unit = extract_unit(name) if name else ""
                 packing = extract_packing_quantity(name) if name else ""
                 capacity = extract_capacity(name) if name else ""
                 brand = extract_brand(name) if name else ""
                 normalized_name = normalize_name(name) if name else ""
-                size = "" 
+                size = ""
 
-                if not packing:
-                    packing = "1"
-                elif packing not in ALLOWED_PACKINGS:
+                if not packing or packing not in ALLOWED_PACKINGS:
                     packing = "1"
 
                 product_key = make_product_key(
@@ -297,7 +334,7 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
                     packing=packing,
                 )
 
-                product = {
+                product: Dict[str, Any] = {
                     "source": "kingfoodmart",
                     "code": code,
                     "name": name,
@@ -319,7 +356,11 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
                 products.append(product)
 
             except Exception as exc:
-                LOGGER.warning("Lỗi khi parse product index %d: %s", idx, exc)
+                LOGGER.warning(
+                    "Error parsing Kingfood product index %d: %s",
+                    idx,
+                    exc,
+                )
                 continue
 
     finally:
@@ -332,10 +373,32 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, object]]:
     return products
 
 
+# ---------------------------------------------------------------------
+# Standalone execution (auto-export Kingfood CSV)
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
     result = crawl_kingfood(headless=False)
-    print(f"Crawled {len(result)} products from Kingfood.")
+    print(f"Crawled {len(result)} products from Kingfood Mart.")
+
+    if not result:
+        print("No products found, CSV will not be generated.")
+    else:
+        import csv
+
+        today = datetime.now().strftime("%Y%m%d")
+        output_path = f"kingfood_beer_prices_{today}.csv"
+
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=result[0].keys())
+            writer.writeheader()
+            writer.writerows(result)
+
+        print(
+            f"Kingfood crawler finished → {len(result)} products "
+            f"saved to {output_path}"
+        )

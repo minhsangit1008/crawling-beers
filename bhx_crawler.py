@@ -9,6 +9,10 @@ This module defines a function `crawl_bhx` that:
     - Returns a list of product dictionaries following
       a common schema.
 
+If this module is executed directly, it will:
+    - Run the BHX crawler.
+    - Export data to bhx_beer_prices_YYYYMMDD.csv.
+
 Author: minhsangitdev
 """
 
@@ -19,7 +23,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
@@ -41,34 +45,49 @@ URL_BHX_BEER = "https://www.bachhoaxanh.com/bia"
 
 LOGGER = logging.getLogger(__name__)
 
+ALLOWED_PACKINGS = {"1", "4", "6", "12", "20", "24"}
 
+
+# ---------------------------------------------------------------------
+# Driver & scrolling helpers
+# ---------------------------------------------------------------------
 def init_driver(headless: bool = False) -> WebDriver:
     """
     Initialize and return a Chrome WebDriver instance.
 
-    Args:
-        headless: If True, run Chrome in headless mode.
+    Parameters
+    ----------
+    headless : bool
+        If True, run Chrome in headless mode.
 
-    Returns:
+    Returns
+    -------
+    WebDriver
         Configured Chrome WebDriver.
     """
-    # Dùng helper chung trong helpers.py
     return build_chrome_driver(headless=headless)
-
 
 
 def handle_age_gate(driver: WebDriver, timeout: int = 10) -> None:
     """
-    Bỏ qua popup xác nhận đủ 18 tuổi của BHX.
+    Bypass BHX 18+ age verification popup if present.
 
-    - Điền đại một tên vào ô "Họ và tên".
-    - Tick checkbox (nếu có).
-    - Click nút "TÔI TRÊN 18 TUỔI".
+    Steps
+    -----
+    1. Fill a dummy name into the "Họ và tên" input.
+    2. Tick the "Do not show again" checkbox if it exists.
+    3. Click the "TÔI TRÊN 18 TUỔI" (I'm over 18) button.
+
+    Parameters
+    ----------
+    driver : WebDriver
+    timeout : int
+        Maximum wait time for the popup elements.
     """
     try:
         wait = WebDriverWait(driver, timeout)
 
-        # 1) Tìm ô nhập "Họ và tên"
+        # 1) Find the "Họ và tên" input box
         try:
             input_box = wait.until(
                 EC.presence_of_element_located(
@@ -76,124 +95,171 @@ def handle_age_gate(driver: WebDriver, timeout: int = 10) -> None:
                 )
             )
         except TimeoutException:
-            LOGGER.info("Không thấy popup 18+ trong thời gian chờ.")
+            LOGGER.info(
+                "18+ popup not detected within timeout. Continue normally."
+            )
             return
 
-        # Điền tên bất kỳ
+        # Fill any placeholder name
         try:
             input_box.clear()
             input_box.send_keys("Automated User")
         except Exception:
-            LOGGER.warning("Không điền được ô tên trong popup 18+.")
+            LOGGER.warning(
+                "Could not fill name field in 18+ popup (continue anyway)."
+            )
 
-        # 2) Tick checkbox "Không hiển thị lại nội dung này" (nếu có)
+        # 2) Checkbox "Không hiển thị lại nội dung này" (if present)
         try:
-            checkbox = driver.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
+            checkbox = driver.find_element(
+                By.CSS_SELECTOR,
+                "input[type='checkbox']",
+            )
             if not checkbox.is_selected():
                 checkbox.click()
         except Exception:
-            LOGGER.info("Không tìm thấy checkbox trong popup 18+ (bỏ qua).")
+            LOGGER.info(
+                "Checkbox in 18+ popup not found (skip ticking checkbox)."
+            )
 
         time.sleep(0.5)
 
-        # 3) Tìm và click nút có chữ 'trên' / 'tren'
-        target_button: Optional[object] = None
+        # 3) Find and click button with text containing "trên 18"
+        target_button: Optional[Any] = None
         try:
             buttons = driver.find_elements(By.TAG_NAME, "button")
             for btn in buttons:
                 label = btn.text.lower().strip()
-                # chặt chẽ hơn một chút: ưu tiên 'trên 18'
-                if "trên 18" in label or "tren 18" in label or "tôi trên 18" in label:
+                if (
+                    "trên 18" in label
+                    or "tren 18" in label
+                    or "tôi trên 18" in label
+                ):
                     target_button = btn
                     break
 
             if target_button:
                 target_button.click()
-                LOGGER.info("Đã xác nhận popup 18+ (TÔI TRÊN 18 TUỔI).")
+                LOGGER.info("18+ popup: clicked 'TÔI TRÊN 18 TUỔI' button.")
             else:
-                LOGGER.warning("Không tìm thấy nút xác nhận 18+.")
+                LOGGER.warning(
+                    "18+ popup: confirmation button not found by text."
+                )
         except Exception:
-            LOGGER.warning("Không click được nút xác nhận 18+.")
+            LOGGER.warning(
+                "18+ popup: error while clicking confirmation button."
+            )
 
     except Exception as exc:
-        LOGGER.warning("Lỗi khi xử lý popup 18+: %s", exc)
+        LOGGER.warning("Error while handling 18+ popup: %s", exc)
 
-def scroll_full_cycle(driver, total_time: int = 60, interval: int = 5) -> None:
+
+def scroll_full_cycle(
+    driver: WebDriver,
+    total_time: int = 60,
+    interval: int = 5,
+) -> None:
     """
     Scroll up/down repeatedly to trigger lazy-loaded products.
 
     Every `interval` seconds:
-        - scroll to bottom
-        - wait half interval
-        - bounce slightly up
-        - wait half interval
-    Runs for `total_time` seconds.
+        - Scroll to the bottom.
+        - Wait half of the interval.
+        - Scroll back up to the middle of the page.
+        - Wait the remaining half of the interval.
+
+    The function runs for approximately `total_time` seconds.
+
+    Parameters
+    ----------
+    driver : WebDriver
+    total_time : int
+        Total duration (in seconds) to keep scrolling.
+    interval : int
+        Delay between scroll movements (seconds).
     """
     end_time = time.time() + total_time
     last_height = 0
     LOGGER.info(
-        "Starting scroll cycles for %ds (interval %ds)...", total_time, interval
+        "Starting scroll cycles for %ds (interval %ds)...",
+        total_time,
+        interval,
     )
 
     while time.time() < end_time:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        # Scroll to the bottom
+        driver.execute_script(
+            "window.scrollTo(0, document.body.scrollHeight);"
+        )
         time.sleep(interval / 2)
 
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
-
+        # Scroll back to around the middle
+        driver.execute_script(
+            "window.scrollTo(0, document.body.scrollHeight / 2);"
+        )
         time.sleep(interval / 2)
 
-        new_height = driver.execute_script("return document.body.scrollHeight")
+        new_height = driver.execute_script(
+            "return document.body.scrollHeight"
+        )
         if new_height <= last_height:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.6);")
+            # Nudge a bit, in case lazy-load is triggered around 60% height
+            driver.execute_script(
+                "window.scrollTo(0, document.body.scrollHeight * 0.6);"
+            )
         last_height = new_height
 
     LOGGER.info("Scrolling completed.")
 
 
+# ---------------------------------------------------------------------
+# Main crawler
+# ---------------------------------------------------------------------
 def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
     """
-    Crawl beer products from BachHoaXanh and return a list of products.
+    Crawl beer products from BachHoaXanh.
 
-    This function:
-        1. Opens BHX beer category page.
-        2. Handles the 18+ age verification gate (if present).
-        3. Scrolls the page multiple times to load all products.
-        4. Waits for the product container.
-        5. Iterates all product items and extracts fields matching
-           the common schema.
+    Steps
+    -----
+    1. Open BHX beer category page.
+    2. Handle the 18+ age verification gate (if present).
+    3. Scroll the page multiple times to load all products.
+    4. Wait for the product container to appear.
+    5. Iterate product items and extract fields matching the
+       unified schema.
 
-    Args:
-        headless: If True, run the browser in headless mode.
+    Parameters
+    ----------
+    headless : bool
+        Run browser in headless mode if True.
 
-    Returns:
+    Returns
+    -------
+    List[Dict[str, Any]]
         List of product dictionaries.
     """
     driver = init_driver(headless=headless)
     products: List[Dict[str, Any]] = []
-
     crawl_date = datetime.now().strftime("%Y-%m-%d")
 
     try:
         LOGGER.info("Opening BHX beer page: %s", URL_BHX_BEER)
         driver.get(URL_BHX_BEER)
 
-        # Try to bypass age gate if it appears.
+        # Try to bypass age gate if it appears
         handle_age_gate(driver)
 
-        # Give the page some time to finish initial load
-        LOGGER.info("Waiting 10 seconds for initial page load...")
+        # Allow some time for initial page load
+        LOGGER.info("Waiting 10 seconds for initial BHX page load...")
         time.sleep(10)
 
-        # Scroll to load all products (60s, every 5s)
+        # Scroll to load all products
         scroll_full_cycle(driver, total_time=60, interval=10)
 
         wait = WebDriverWait(driver, 90)
 
-        # Main container that holds all the product items
-        container_selector = (
-            "div.-mt-1.-mx-1.flex.flex-wrap.content-stretch.px-0"
-        )
+        # Main container that holds product items
+        container_selector = "div.-mt-1.-mx-1.flex.flex-wrap.content-stretch.px-0"
         wait.until(
             EC.presence_of_element_located(
                 (By.CSS_SELECTOR, container_selector)
@@ -209,9 +275,9 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
         price_selector = "div.product_price"
 
         for element in items:
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             # Basic fields: name & URL
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             try:
                 name = element.find_element(
                     By.CSS_SELECTOR,
@@ -228,18 +294,22 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
             except Exception:
                 url = ""
 
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             # Product code:
             #   Case 1: "product-code" attribute on a div
             #   Case 2: id="product_<id>" on <a> tag
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             code = ""
 
             try:
-                code = element.find_element(
-                    By.CSS_SELECTOR,
-                    "div[product-code]",
-                ).get_attribute("product-code").strip()
+                code = (
+                    element.find_element(
+                        By.CSS_SELECTOR,
+                        "div[product-code]",
+                    )
+                    .get_attribute("product-code")
+                    .strip()
+                )
             except Exception:
                 code = ""
 
@@ -249,14 +319,14 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
                         By.CSS_SELECTOR,
                         "a[id^='product_']",
                     )
-                    raw_id = anchor_tag.get_attribute("id")
+                    raw_id = anchor_tag.get_attribute("id") or ""
                     code = raw_id.split("_", maxsplit=1)[-1].strip()
                 except Exception:
                     code = ""
 
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             # Current price (after promotion)
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             try:
                 price_after_text = element.find_element(
                     By.CSS_SELECTOR,
@@ -265,9 +335,9 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
             except Exception:
                 price_after_text = ""
 
-            # -------------------------------------------------
-            # Original price & promotion text
-            # -------------------------------------------------
+            # ---------------------------------------------------------
+            # Original price & promotion text block
+            # ---------------------------------------------------------
             price_original_text = ""
             promotion_text_raw = ""
 
@@ -296,33 +366,49 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
 
             promotion = extract_promotion_from_text(promotion_text_raw)
 
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             # Text-based parsing: unit, packing, capacity, brand,
             # normalized name, product key.
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             unit = extract_unit(name)
             packing = extract_packing_quantity(name)
             capacity = extract_capacity(name)
             brand = extract_brand(name)
             normalized_name = normalize_name(name)
 
-            # Enforce packing allowed set: [1, 4, 6, 12, 20, 24],
-            # any missing or unexpected value is forced to "1".
-            allowed_packings = {"1", "4", "6", "12", "20", "24"}
-            if not packing:
-                packing = "1"
-            elif packing not in allowed_packings:
+            # Enforce allowed packing set
+            if not packing or packing not in ALLOWED_PACKINGS:
                 packing = "1"
 
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             # Price conversion
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             price_after_int = extract_price_int(price_after_text)
             price_original_int = extract_price_int(price_original_text)
-
             price = price_original_int or price_after_int
 
-            # If no unit and price < 40,000 VND, assume it is a single can.
+            # If no promotion parsed but there is a price difference,
+            # optionally compute a discount percentage.
+            if (
+                not promotion
+                and price
+                and price_after_int
+                and price > price_after_int
+            ):
+                try:
+                    discount = (price - price_after_int) * 100.0 / float(
+                        price
+                    )
+                    discount = round(discount, 2)
+                    if abs(discount - int(discount)) < 1e-6:
+                        promotion = f"{int(discount)}%"
+                    else:
+                        promotion = f"{discount}%"
+                except Exception:
+                    # If calculation fails, keep promotion as empty.
+                    pass
+
+            # If no unit and price < 40,000 VND, assume a single can
             if not unit and price and price < 40_000:
                 unit = "Lon"
 
@@ -332,9 +418,9 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
                 packing=packing,
             )
 
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             # Build product record with common schema
-            # -------------------------------------------------
+            # ---------------------------------------------------------
             product: Dict[str, Any] = {
                 "source": "bachhoaxanh",
                 "code": code,
@@ -357,7 +443,41 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
             products.append(product)
 
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
     LOGGER.info("BHX crawl finished. Total products: %d", len(products))
     return products
+
+
+# ---------------------------------------------------------------------
+# Standalone execution (auto-export BHX CSV)
+# ---------------------------------------------------------------------
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    result = crawl_bhx(headless=False)
+    print(f"Crawled {len(result)} products from BachHoaXanh.")
+
+    if not result:
+        print("No products found, CSV will not be generated.")
+    else:
+        import csv
+
+        today = datetime.now().strftime("%Y%m%d")
+        output_path = f"bhx_beer_prices_{today}.csv"
+
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=result[0].keys())
+            writer.writeheader()
+            writer.writerows(result)
+
+        print(
+            f"BHX crawler finished → {len(result)} products "
+            f"saved to {output_path}"
+        )

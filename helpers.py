@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from typing import Optional
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
@@ -59,25 +60,29 @@ BRANDS = [
     "St. Sebastiaan",
     "Ngũ Hành",
     "Cherie",
-
 ]
+
 
 def build_chrome_driver(headless: bool = False) -> webdriver.Chrome:
     """
-    Tạo Chrome WebDriver dùng chung cho các crawler.
+    Create a Chrome WebDriver instance shared across crawlers.
 
-    Args:
-        headless: True nếu muốn chạy chế độ không hiện cửa sổ Chrome.
+    Parameters
+    ----------
+    headless : bool
+        If True, run Chrome in headless mode.
 
-    Returns:
-        webdriver.Chrome đã cấu hình sẵn.
+    Returns
+    -------
+    webdriver.Chrome
+        Configured Chrome WebDriver.
     """
     options = webdriver.ChromeOptions()
     if headless:
-        # Headless mới cho Chrome 109+
+        # New headless mode for Chrome 109+
         options.add_argument("--headless=new")
 
-    # Các flag giúp chạy ổn định hơn
+    # Flags for more stable execution in various environments
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -92,48 +97,57 @@ def build_chrome_driver(headless: bool = False) -> webdriver.Chrome:
 
 def extract_capacity(text: str) -> str:
     """
-    Extract capacity, supports both ml and cl.
+    Extract capacity from product name, supporting both ml and cl.
 
-    Examples:
-        "Thùng 24 lon bia 330ml" -> "330ml"
-        "Bia 33 CL"              -> "33cl"
+    Examples
+    --------
+    "Thùng 24 lon bia 330ml" -> "330ml"
+    "Bia 33 CL"              -> "33cl"
 
-    Args:
-        text: Raw product name text.
+    Parameters
+    ----------
+    text : str
+        Raw product name text.
 
-    Returns:
+    Returns
+    -------
+    str
         Capacity string with unit, e.g. "330ml", "33cl",
         or empty string if not found.
     """
-    t = text.lower()
+    lowered = text.lower()
 
-    # Ưu tiên ml
-    m_ml = re.search(r"(\d+)\s*ml", t)
-    if m_ml:
-        return f"{m_ml.group(1)}ml"
+    # Prefer ml first
+    match_ml = re.search(r"(\d+)\s*ml", lowered)
+    if match_ml:
+        return f"{match_ml.group(1)}ml"
 
-    # Sau đó tới cl
-    m_cl = re.search(r"(\d+)\s*cl", t)
-    if m_cl:
-        return f"{m_cl.group(1)}cl"
+    # Then cl
+    match_cl = re.search(r"(\d+)\s*cl", lowered)
+    if match_cl:
+        return f"{match_cl.group(1)}cl"
 
     return ""
-
 
 
 def extract_unit(text: str) -> str:
     """
     Infer selling unit from product name.
 
-    Examples:
-        Contains "thùng" -> "Thùng"
-        Contains "lon"   -> "Lon"
-        Contains "chai"  -> "Chai"
+    Rules
+    -----
+    - Contains "thùng" -> "Thùng"
+    - Contains "lon"   -> "Lon"
+    - Contains "chai"  -> "Chai"
 
-    Args:
-        text: Raw product name text.
+    Parameters
+    ----------
+    text : str
+        Raw product name text.
 
-    Returns:
+    Returns
+    -------
+    str
         Unit as one of {"Thùng", "Lon", "Chai"} or empty string if unknown.
     """
     lowered = text.lower()
@@ -150,117 +164,167 @@ def extract_packing_quantity(text: str) -> str:
     """
     Extract packing quantity (number of items in a pack).
 
-    Rules:
-        - Ưu tiên số đứng ngay trước 'lon' / 'chai'.
-        - Nếu không có, dùng số sau 'thùng' / 'lốc' / 'hộp'.
-        - Loại bỏ các số thuộc capacity (ml / cl).
-        - Cuối cùng, fallback: lấy số đầu tiên không phải ml/cl.
+    Rules
+    -----
+    - Prefer numbers immediately before "lon"/"chai".
+    - If not found, use numbers after "thùng"/"lốc"/"hộp".
+    - Ignore numbers belonging to capacity (ml/cl).
+    - Fallback: first number that is not part of ml/cl token.
 
-    Args:
-        text: Raw product name text.
+    Parameters
+    ----------
+    text : str
+        Raw product name text.
 
-    Returns:
+    Returns
+    -------
+    str
         Packing quantity as digits, or empty string if not found.
     """
-    t = text.lower()
+    lowered = text.lower()
 
-    # 1) Số trước lon/chai: "thùng 24 lon", "lốc 6 lon"
-    m = re.search(r"(\d+)\s*(lon|chai)", t)
-    if m:
-        return m.group(1)
+    # 1) Number before lon/chai: "thùng 24 lon", "lốc 6 lon"
+    match = re.search(r"(\d+)\s*(lon|chai)", lowered)
+    if match:
+        return match.group(1)
 
-    # 2) Số sau 'thùng' / 'lốc' / 'hộp'
-    m2 = re.search(r"(thùng|lốc|hop|hộp)\s*(\d+)", t)
-    if m2:
-        return m2.group(2)
+    # 2) Number after 'thùng' / 'lốc' / 'hộp'
+    match2 = re.search(r"(thùng|lốc|hop|hộp)\s*(\d+)", lowered)
+    if match2:
+        return match2.group(2)
 
-    # 3) Fallback: số đầu tiên nhưng không phải capacity (ml/cl)
+    # 3) Fallback: first number that is not capacity (ml/cl)
     candidates = []
-    for m3 in re.finditer(r"(\d+)", t):
-        num = m3.group(1)
-        end = m3.end()
-        after = t[end:].strip()
+    for m in re.finditer(r"(\d+)", lowered):
+        num = m.group(1)
+        end = m.end()
+        after = lowered[end:].strip()
         if after.startswith(("ml", "cl")):
-            # bỏ capacity như 330ml, 33cl
+            # Skip capacities such as 330ml, 33cl
             continue
         candidates.append(num)
 
     return candidates[0] if candidates else ""
 
 
-
 def extract_price_int(price_text: str) -> int:
     """
-    Parse price string and convert to integer.
+    Parse price string and convert it to integer VND.
 
-    Example:
-        "410.000đ /24 lon 330ml" -> 410000
+    Example
+    -------
+    "410.000đ /24 lon 330ml" -> 410000
 
-    Args:
-        price_text: Raw price string from the website.
+    Parameters
+    ----------
+    price_text : str
+        Raw price string from the website.
 
-    Returns:
+    Returns
+    -------
+    int
         Price as integer (VND). Returns 0 if parsing fails or text is empty.
     """
     if not price_text:
         return 0
 
-    parts = price_text.split("đ", maxsplit=1)
-    money_part = parts[0]
+    # Split at 'đ' (VND symbol)
+    money_part = price_text.split("đ", maxsplit=1)[0]
     digits = re.sub(r"\D", "", money_part)
     return int(digits) if digits else 0
 
 
 def extract_brand(text: str) -> str:
     """
-    Extract brand name with special rules:
-        - If product contains '1664' or 'blanc'/'blance', return '1664 Blanc'.
-        - Otherwise, match from BRANDS list.
+    Extract brand name from product name.
+
+    Special rules
+    -------------
+    - If product contains '1664' or 'blanc'/'blance' -> '1664 Blanc'.
+    - Normalize some Vietnamese and English variants:
+        'hanoi'     -> 'Hà Nội'
+        'saigon'    -> 'Sài Gòn'
+        'carsberg'  -> 'Carlsberg'
+        'east west' / 'far east' / 'eastwest' -> 'East West'
+        'bud'       -> 'Budweiser'
+        'dalat cider' / 'da lat cider' -> 'Dalat Cider'
+    - Otherwise, match from BRANDS list (case-insensitive).
+
+    Parameters
+    ----------
+    text : str
+        Raw product name text.
+
+    Returns
+    -------
+    str
+        Brand name or empty string if not recognized.
     """
-    t = text.lower()
+    lowered = text.lower()
 
     # Special override for 1664 Blanc
-    if "1664" in t or "blanc" in t or "blance" in t:
+    if "1664" in lowered or "blanc" in lowered or "blance" in lowered:
         return "1664 Blanc"
 
-    if "Hanoi" in t or "hà nội" in t:
+    if "hanoi" in lowered or "hà nội" in lowered:
         return "Hà Nội"
 
-    if "Saigon" in t or "sài gòn" in t:
+    if "saigon" in lowered or "sài gòn" in lowered:
         return "Sài Gòn"
-    
-    if "Carlsberg" in t or "carsberg" in t:
+
+    if "carlsberg" in lowered or "carsberg" in lowered:
         return "Carlsberg"
 
-    if "Far East" in t or "east west" in t or "Eastwest" in t:
+    if (
+        "far east" in lowered
+        or "east west" in lowered
+        or "eastwest" in lowered
+    ):
         return "East West"
 
-    if "Bud" in t:
+    if "bud " in lowered or lowered.startswith("bud"):
         return "Budweiser"
 
-    if "Dalat Cider" in t or "Da Lat Cider" in t:
+    if "dalat cider" in lowered or "da lat cider" in lowered:
         return "Dalat Cider"
 
-    # Normal brand detection
-    for b in BRANDS:
-        if b.lower() in t:
-            return b
+    # Normal brand detection via list
+    for brand in BRANDS:
+        if brand.lower() in lowered:
+            return brand
 
     return ""
 
 
 def extract_promotion_from_text(text: str) -> str:
     """
-    Extract promotion percentage from raw text, support decimals.
+    Extract promotion percentage from raw text, supporting decimals.
 
-    Examples:
-        "-3%"     -> "3%"
-        "Giảm 1.98%" or "1,98%" -> "1.98%"
+    Examples
+    --------
+    "-3%"              -> "3%"
+    "Giảm 1.98%"       -> "1.98%"
+    "Giảm 1,98% ABC"   -> "1.98%"
+
+    Strategy
+    --------
+    Take all percentage-like numbers and return the last one,
+    assuming the final percentage is the actual discount.
+
+    Parameters
+    ----------
+    text : str
+        Raw promotion text.
+
+    Returns
+    -------
+    str
+        Promotion percentage string like '3%' or '1.98%'.
+        Returns empty string if no percentage is found.
     """
     if not text:
         return ""
 
-    # Lấy TẤT CẢ số có kèm % rồi chọn số cuối cùng (thường là % giảm)
     matches = re.findall(r"(\d+(?:[.,]\d+)?)\s*%", text)
     if not matches:
         return ""
@@ -275,27 +339,30 @@ def extract_promotion_from_text(text: str) -> str:
         return f"{value}%"
 
 
-
 def normalize_name(text: str) -> str:
     """
-    Normalize product name for matching across different sources.
+    Normalize product name for cross-site matching.
 
-    Steps:
-        - Lowercase
-        - Remove accents/diacritics
-        - Keep only alphanumeric and spaces
-        - Collapse multiple spaces
+    Steps
+    -----
+    - Lowercase.
+    - Remove accents/diacritics.
+    - Keep only alphanumeric characters and spaces.
+    - Collapse multiple spaces into one.
 
-    Args:
-        text: Original product name.
+    Parameters
+    ----------
+    text : str
+        Original product name.
 
-    Returns:
-        Normalized name string.
+    Returns
+    -------
+    str
+        Normalized product name.
     """
-    # Convert to lowercase
     lowered = text.lower().strip()
 
-    # Remove accents (Vietnamese, etc.)
+    # Remove accents (e.g. Vietnamese diacritics)
     normalized = unicodedata.normalize("NFD", lowered)
     normalized = "".join(
         ch for ch in normalized if unicodedata.category(ch) != "Mn"
@@ -311,15 +378,31 @@ def normalize_name(text: str) -> str:
 
 
 def make_product_key(
-    brand: str,
-    capacity: str,
-    packing: str,
+    brand: Optional[str],
+    capacity: Optional[str],
+    packing: Optional[str],
 ) -> str:
     """
     Build a product key for cross-site comparison (variant removed).
 
-    Example:
-        brand="Heineken", capacity_ml="330", packing="24" -> "HEINEKEN_330_24"
+    Example
+    -------
+    brand="Heineken", capacity="330ml", packing="24"
+        -> "HEINEKEN_330ML_24"
+
+    Parameters
+    ----------
+    brand : str or None
+        Brand name.
+    capacity : str or None
+        Capacity string (e.g. '330ml').
+    packing : str or None
+        Packing quantity (e.g. '24').
+
+    Returns
+    -------
+    str
+        Normalized composite key like "HEINEKEN_330ML_24".
     """
     brand_part = (brand or "").strip().replace(" ", "")
     cap_part = (capacity or "").strip()
