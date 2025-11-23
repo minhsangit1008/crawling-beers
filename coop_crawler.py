@@ -178,195 +178,120 @@ def _click_option_by_text(
 
 
 # ---------------------------------------------------------------------
-# Location popup handling
+# Popup handling (address + supermarket)
 # ---------------------------------------------------------------------
-def _handle_location_popup(
-    driver: webdriver.Chrome,
-    timeout: int = 40,
-) -> None:
-    """
-    Handle Co.op Online location popup.
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-    The function:
-        - Selects province, district, ward.
-        - Fills address field.
-        - Chooses a store.
-        - Clicks "Mua sắm ngay" (Start shopping).
 
-    Parameters
-    ----------
-    driver : webdriver.Chrome
-    timeout : int
-        Max wait time for popup elements.
+def handle_coop_address_popup(driver, timeout: int = 15) -> None:
     """
-    LOGGER.info("Handling location popup (dropdown-based)...")
+    Xử lý Popup 1: form chọn địa chỉ (Tỉnh/Thành, Quận/Huyện, Phường/Xã, Địa chỉ).
+
+    - Chọn:
+        + Thành phố Hồ Chí Minh
+        + Huyện Bình Chánh
+        + Xã Bình Hưng
+        + Địa chỉ = "1"
+    - Click nút "Xác nhận"
+    """
     wait = WebDriverWait(driver, timeout)
-
-    # Wait for dropdown containers
     try:
-        dropdown_xpath = (
-            "//div[contains(@class,'css-6sgxfm')]"
-            "[.//div[contains(@class,'css-1cxxswr')]"
-            " and .//div[contains(@class,'css-1k26lhb')]]"
-        )
-        dropdowns = wait.until(
-            EC.presence_of_all_elements_located((By.XPATH, dropdown_xpath))
-        )
-        LOGGER.info("Found %d 'css-6sgxfm' dropdown containers.", len(dropdowns))
-    except TimeoutException:
-        LOGGER.warning("Address form not found (css-6sgxfm). Skipping popup.")
-        return
-
-    if len(dropdowns) < 3:
-        LOGGER.warning(
-            "Number of dropdowns < 3 (len=%d). DOM may have changed, "
-            "skipping popup handling.",
-            len(dropdowns),
-        )
-        return
-
-    def open_and_select(idx: int, desc: str, option_text: str) -> None:
-        """
-        Open dropdown by index and select the desired option.
-        """
-        try:
-            dropdowns_local = wait.until(
-                EC.presence_of_all_elements_located((By.XPATH, dropdown_xpath))
+        # Đợi popup hiện
+        wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "div.teko-modal.teko-modal-show")
             )
-            if idx >= len(dropdowns_local):
-                LOGGER.warning(
-                    "Not enough dropdowns to select %s (idx=%d, len=%d).",
-                    desc,
-                    idx,
-                    len(dropdowns_local),
-                )
-                return
+        )
+        LOGGER.info("Co.op: Popup chọn địa chỉ xuất hiện")
 
-            field_el = dropdowns_local[idx]
-            _safe_click_element(driver, field_el, f"open {desc} dropdown")
-            time.sleep(0.5)
+        # Chọn tỉnh/thành
+        driver.find_element(By.ID, "provinceCode").click()
+        time.sleep(0.8)
+        driver.find_element(By.XPATH, "//div[text()='Thành phố Hồ Chí Minh']").click()
+        time.sleep(1.2)
 
-            clicked = _click_option_by_text(driver, option_text, timeout=20)
-            if not clicked:
-                LOGGER.warning(
-                    "Could not select option '%s' for %s.",
-                    option_text,
-                    desc,
-                )
-            else:
-                time.sleep(0.7)
+        # Chọn quận/huyện
+        driver.find_element(By.ID, "districtCode").click()
+        time.sleep(0.8)
+        driver.find_element(By.XPATH, "//div[text()='Huyện Bình Chánh']").click()
+        time.sleep(1.2)
 
-        except Exception as exc:
-            LOGGER.warning("Failed to select %s: %s", desc, exc)
-
-    # Province
-    open_and_select(
-        idx=0,
-        desc="Province",
-        option_text="Thành phố Hồ Chí Minh",
-    )
-
-    # District
-    open_and_select(
-        idx=1,
-        desc="District",
-        option_text="Huyện Bình Chánh",
-    )
-
-    # Ward
-    open_and_select(
-        idx=2,
-        desc="Ward",
-        option_text="Xã Bình Hưng",
-    )
-
-    # Address field
-    try:
-        try:
-            addr_input = wait.until(
-                EC.presence_of_element_located((By.ID, "address"))
-            )
-        except TimeoutException:
-            addr_input = wait.until(
-                EC.presence_of_element_located(
-                    (
-                        By.XPATH,
-                        "//input[@id='address' or @name='address' or "
-                        "contains(@placeholder,'Địa chỉ') or "
-                        "contains(@placeholder,'địa chỉ')]",
-                    )
-                )
-            )
-
-        _safe_click_element(driver, addr_input, "address input")
-        addr_input.clear()
-        addr_input.send_keys("1")
-        LOGGER.info("Filled address = '1'.")
+        # Chọn phường/xã
+        driver.find_element(By.ID, "wardCode").click()
+        time.sleep(0.8)
+        driver.find_element(By.XPATH, "//div[text()='Xã Bình Hưng']").click()
         time.sleep(0.5)
 
-    except Exception as exc:
-        LOGGER.warning("Failed to fill address field: %s", exc)
+        # Nhập số nhà
+        driver.find_element(By.ID, "address").send_keys("1")
 
-    # Confirm button
-    try:
-        confirm_xpath = (
-            "//button[contains(normalize-space(),'Xác nhận') "
-            "or .//div[contains(normalize-space(),'Xác nhận')]]"
-        )
-        try:
-            confirm_btn = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, confirm_xpath))
-            )
-            _safe_click_element(driver, confirm_btn, "button 'Xác nhận'")
-            time.sleep(2)
-        except TimeoutException:
-            LOGGER.info(
-                "No 'Xác nhận' button found, popup might auto advance."
-            )
-    except Exception as exc:
-        LOGGER.warning("Error processing 'Xác nhận' button: %s", exc)
+        # Xác nhận
+        driver.find_element(
+            By.XPATH, "//button[contains(.,'Xác nhận')]"
+        ).click()
+        LOGGER.info("Co.op: Đã xác nhận địa chỉ")
 
-    # Store selection
+        # Đợi popup đóng
+        wait.until(
+            EC.invisibility_of_element_located(
+                (By.CSS_SELECTOR, "div.teko-modal.teko-modal-show")
+            )
+        )
+        LOGGER.info("Co.op: Popup địa chỉ đã đóng")
+    except TimeoutException:
+        LOGGER.info("Co.op: Không có popup địa chỉ (đã lưu trước đó)")
+
+
+def handle_coop_supermarket_popup(driver, timeout: int = 20) -> None:
+    """
+    Xử lý Popup 2: chọn siêu thị + click "Mua sắm ngay".
+
+    - Chọn siêu thị đầu tiên (class='css-ot6l9u')
+    - Click nút "Mua sắm ngay" (button.css-18uoi51)
+    """
+    wait = WebDriverWait(driver, timeout)
     try:
-        store_xpath = (
-            "//span[contains(@class,'css-1vgbj23') and "
-            "contains(normalize-space(),'Co.opXtra Tạ Quang Bửu')]"
-            "/ancestor::div[contains(@class,'teko-row') and "
-            "contains(@class,'css-1qrgscw')]"
+        wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "div.teko-modal.teko-modal-show")
+            )
         )
-        store_el = WebDriverWait(driver, 25).until(
-            EC.element_to_be_clickable((By.XPATH, store_xpath))
+        LOGGER.info("Co.op: Popup chọn siêu thị xuất hiện")
+
+        # Chọn siêu thị đầu tiên
+        first_store = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "div.css-ot6l9u"))
         )
-        _safe_click_element(
-            driver,
-            store_el,
-            "store 'Co.opXtra Tạ Quang Bửu'",
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});",
+            first_store,
         )
-        time.sleep(2)
+        time.sleep(0.5)
+        first_store.click()
+        LOGGER.info("Co.op: Đã chọn siêu thị đầu tiên")
+
+        # Click nút "Mua sắm ngay"
+        buy_button = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.css-18uoi51"))
+        )
+        driver.execute_script("arguments[0].click();", buy_button)
+        LOGGER.info("Co.op: ĐÃ CLICK THÀNH CÔNG 'Mua sắm ngay'")
+
+        # Đợi popup đóng hoàn toàn
+        wait.until(
+            EC.invisibility_of_element_located(
+                (By.CSS_SELECTOR, "div.teko-modal.teko-modal-show")
+            )
+        )
+        LOGGER.info("Co.op: Popup siêu thị đã đóng – HOÀN TẤT!")
 
     except TimeoutException:
-        LOGGER.warning("Timeout while selecting store.")
-    except Exception as exc:
-        LOGGER.warning("Error selecting store: %s", exc)
-
-    # "Mua sắm ngay" button
-    try:
-        buy_btn_xpath = (
-            "//button[.//div[contains(@class,'button-text') and "
-            "contains(normalize-space(),'Mua sắm ngay')]]"
-        )
-        buy_btn = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable((By.XPATH, buy_btn_xpath))
-        )
-        _safe_click_element(driver, buy_btn, "button 'Mua sắm ngay'")
-        time.sleep(3)
-
-    except TimeoutException:
-        LOGGER.warning("Timeout waiting for 'Mua sắm ngay' button.")
-    except Exception as exc:
-        LOGGER.warning("Error clicking 'Mua sắm ngay': %s", exc)
-
-    LOGGER.info("Location popup handling completed.")
+        LOGGER.info("Co.op: Không có popup siêu thị (đã chọn trước đó)")
+    except Exception as e:
+        LOGGER.warning("Co.op: Lỗi khi xử lý popup siêu thị: %s", e)
 
 
 # ---------------------------------------------------------------------
@@ -481,8 +406,14 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, Any]]:
         LOGGER.info("Opening Co.op URL: %s", CATEGORY_URL)
         driver.get(CATEGORY_URL)
 
+        # Xử lý popup địa chỉ
         time.sleep(5)
-        _handle_location_popup(driver, timeout=40)
+        handle_coop_address_popup(driver, timeout=15)
+
+        # Xử lý popup chọn siêu thị + 'Mua sắm ngay'
+        time.sleep(3)
+        handle_coop_supermarket_popup(driver, timeout=20)
+
 
         time.sleep(5)
         LOGGER.info(

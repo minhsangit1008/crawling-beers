@@ -154,62 +154,88 @@ def handle_age_gate(driver: WebDriver, timeout: int = 10) -> None:
         LOGGER.warning("Error while handling 18+ popup: %s", exc)
 
 
-def scroll_full_cycle(
-    driver: WebDriver,
-    total_time: int = 60,
-    interval: int = 5,
-) -> None:
+# def scroll_full_cycle(
+#     driver: WebDriver,
+#     total_time: int = 60,
+#     interval: int = 5,
+# ) -> None:
+#     """
+#     Scroll up/down repeatedly to trigger lazy-loaded products.
+
+#     Every `interval` seconds:
+#         - Scroll to the bottom.
+#         - Wait half of the interval.
+#         - Scroll back up to the middle of the page.
+#         - Wait the remaining half of the interval.
+
+#     The function runs for approximately `total_time` seconds.
+
+#     Parameters
+#     ----------
+#     driver : WebDriver
+#     total_time : int
+#         Total duration (in seconds) to keep scrolling.
+#     interval : int
+#         Delay between scroll movements (seconds).
+#     """
+#     end_time = time.time() + total_time
+#     last_height = 0
+#     LOGGER.info(
+#         "Starting scroll cycles for %ds (interval %ds)...",
+#         total_time,
+#         interval,
+#     )
+
+#     while time.time() < end_time:
+#         # Scroll to the bottom
+#         driver.execute_script(
+#             "window.scrollTo(0, document.body.scrollHeight);"
+#         )
+#         time.sleep(interval / 2)
+
+#         # Scroll back to around the middle
+#         driver.execute_script(
+#             "window.scrollTo(0, document.body.scrollHeight / 2);"
+#         )
+#         time.sleep(interval / 2)
+
+#         new_height = driver.execute_script(
+#             "return document.body.scrollHeight"
+#         )
+#         if new_height <= last_height:
+#             # Nudge a bit, in case lazy-load is triggered around 60% height
+#             driver.execute_script(
+#                 "window.scrollTo(0, document.body.scrollHeight * 0.6);"
+#             )
+#         last_height = new_height
+
+#     LOGGER.info("Scrolling completed.")
+def scroll_up_down_loop(driver, loops: int = 10, steps_per_scroll: int = 10, delay: float = 1.5):
     """
-    Scroll up/down repeatedly to trigger lazy-loaded products.
-
-    Every `interval` seconds:
-        - Scroll to the bottom.
-        - Wait half of the interval.
-        - Scroll back up to the middle of the page.
-        - Wait the remaining half of the interval.
-
-    The function runs for approximately `total_time` seconds.
-
-    Parameters
-    ----------
-    driver : WebDriver
-    total_time : int
-        Total duration (in seconds) to keep scrolling.
-    interval : int
-        Delay between scroll movements (seconds).
+    Scroll từ từ xuống cuối trang rồi nhảy về giữa trang, lặp lại 'loops' lần.
     """
-    end_time = time.time() + total_time
-    last_height = 0
-    LOGGER.info(
-        "Starting scroll cycles for %ds (interval %ds)...",
-        total_time,
-        interval,
-    )
+    LOGGER.info(f"Starting scroll loop: {loops} loops, each with {steps_per_scroll} steps...")
 
-    while time.time() < end_time:
-        # Scroll to the bottom
-        driver.execute_script(
-            "window.scrollTo(0, document.body.scrollHeight);"
-        )
-        time.sleep(interval / 2)
+    for loop in range(1, loops + 1):
+        LOGGER.info(f"--- Loop {loop}/{loops}: scrolling DOWN ---")
 
-        # Scroll back to around the middle
-        driver.execute_script(
-            "window.scrollTo(0, document.body.scrollHeight / 2);"
-        )
-        time.sleep(interval / 2)
-
-        new_height = driver.execute_script(
-            "return document.body.scrollHeight"
-        )
-        if new_height <= last_height:
-            # Nudge a bit, in case lazy-load is triggered around 60% height
+        # Scroll từ từ xuống cuối trang
+        for step in range(1, steps_per_scroll + 1):
             driver.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight * 0.6);"
+                f"window.scrollTo(0, document.body.scrollHeight * {step/steps_per_scroll});"
             )
-        last_height = new_height
+            time.sleep(delay)
 
-    LOGGER.info("Scrolling completed.")
+        LOGGER.info(f"--- Loop {loop}/{loops}: jump to MIDDLE ---")
+
+        # Nhảy ngay về giữa trang, không scroll từ từ
+        time.sleep(5)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.5);")
+        time.sleep(delay)
+
+    LOGGER.info("Completed full up-down-middle scrolling loops.")
+
+
 
 
 # ---------------------------------------------------------------------
@@ -250,11 +276,15 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
         handle_age_gate(driver)
 
         # Allow some time for initial page load
-        LOGGER.info("Waiting 10 seconds for initial BHX page load...")
-        time.sleep(10)
+        LOGGER.info("Waiting 5 seconds for initial BHX page load...")
+        time.sleep(5)
 
         # Scroll to load all products
-        scroll_full_cycle(driver, total_time=60, interval=10)
+        # scroll_full_cycle(driver, total_time=60, interval=10)
+        scroll_up_down_loop(driver, loops=10, steps_per_scroll=10, delay=1.5)
+
+
+
 
         wait = WebDriverWait(driver, 90)
 

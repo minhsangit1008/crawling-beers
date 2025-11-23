@@ -18,7 +18,6 @@ Usage examples:
     # Crawl Mega + Lotte, write to a custom file
     python main.py --sources mega lotte --output mega_lotte.csv
 """
-
 from __future__ import annotations
 
 import argparse
