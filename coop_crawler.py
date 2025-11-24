@@ -64,6 +64,7 @@ from helpers import (
     normalize_name,
     make_product_key,
     build_chrome_driver,
+    make_unique_code,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -434,6 +435,7 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, Any]]:
             )
 
         elements = driver.find_elements(By.CSS_SELECTOR, ITEM_SELECTOR)
+        time.sleep(10)
         LOGGER.info("Found %d Co.op product items.", len(elements))
 
         crawl_date = datetime.now().strftime("%Y-%m-%d")
@@ -451,29 +453,17 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, Any]]:
 
                 url = href if href.startswith("http") else urljoin(BASE_URL, href)
 
-                code = card.get_attribute("data-content-name") or ""
-                if not code and href:
-                    try:
-                        code = href.rstrip("/").split("/")[-1]
-                    except Exception:
-                        code = ""
-
                 # ---------------------------------------------------------
                 # brand, name, unit
                 # ---------------------------------------------------------
-                try:
-                    brand_el = card.find_element(
-                        By.CSS_SELECTOR, "div.product-brand-name"
-                    )
-                    brand = brand_el.text.strip()
-                except Exception:
-                    brand = ""
 
                 try:
                     name_el = card.find_element(By.CSS_SELECTOR, "h3[title]")
                     name = name_el.text.strip()
                 except Exception:
                     name = ""
+
+                brand = extract_brand(name)
 
                 unit = ""
                 try:
@@ -597,6 +587,8 @@ def crawl_coop(headless: bool = False) -> List[Dict[str, Any]]:
                     capacity=capacity,
                     packing=packing,
                 )
+
+                code = make_unique_code("coop", product_key, normalized_name)
 
                 product: Dict[str, Any] = {
                     "source": "cooponline",

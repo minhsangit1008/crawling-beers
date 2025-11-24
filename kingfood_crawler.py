@@ -53,6 +53,7 @@ from helpers import (
     extract_unit,
     normalize_name,
     make_product_key,
+    make_unique_code,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -194,13 +195,6 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, Any]]:
                 href = element.get_attribute("href") or ""
                 url = urljoin(BASE_URL, href) if href else ""
 
-                code = ""
-                if href:
-                    try:
-                        code = href.rstrip("/").split("/")[-1]
-                    except Exception:
-                        code = ""
-
                 # ---------------------------------------------------------
                 # name
                 # ---------------------------------------------------------
@@ -333,6 +327,8 @@ def crawl_kingfood(headless: bool = False) -> List[Dict[str, Any]]:
                     capacity=capacity,
                     packing=packing,
                 )
+
+                code = make_unique_code("kingfood", product_key, normalized_name)
 
                 product: Dict[str, Any] = {
                     "source": "kingfoodmart",

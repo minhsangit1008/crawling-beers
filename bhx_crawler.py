@@ -39,6 +39,7 @@ from helpers import (
     make_product_key,
     normalize_name,
     build_chrome_driver,
+    make_unique_code,
 )
 
 URL_BHX_BEER = "https://www.bachhoaxanh.com/bia"
@@ -324,35 +325,6 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
             except Exception:
                 url = ""
 
-            # ---------------------------------------------------------
-            # Product code:
-            #   Case 1: "product-code" attribute on a div
-            #   Case 2: id="product_<id>" on <a> tag
-            # ---------------------------------------------------------
-            code = ""
-
-            try:
-                code = (
-                    element.find_element(
-                        By.CSS_SELECTOR,
-                        "div[product-code]",
-                    )
-                    .get_attribute("product-code")
-                    .strip()
-                )
-            except Exception:
-                code = ""
-
-            if not code:
-                try:
-                    anchor_tag = element.find_element(
-                        By.CSS_SELECTOR,
-                        "a[id^='product_']",
-                    )
-                    raw_id = anchor_tag.get_attribute("id") or ""
-                    code = raw_id.split("_", maxsplit=1)[-1].strip()
-                except Exception:
-                    code = ""
 
             # ---------------------------------------------------------
             # Current price (after promotion)
@@ -447,6 +419,8 @@ def crawl_bhx(headless: bool = False) -> List[Dict[str, Any]]:
                 capacity=capacity,
                 packing=packing,
             )
+
+            code = make_unique_code("bachhoaxanh", product_key, normalized_name)
 
             # ---------------------------------------------------------
             # Build product record with common schema

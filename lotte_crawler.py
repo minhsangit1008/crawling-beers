@@ -41,6 +41,7 @@ from helpers import (
     normalize_name,
     make_product_key,
     build_chrome_driver,
+    make_unique_code,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -207,21 +208,6 @@ def crawl_lotte(headless: bool = True) -> List[Dict[str, Any]]:
                 url = urljoin(LOTTE_URL, href) if href else ""
 
                 # ---------------------------------------------------------
-                # Code (parsed from href)
-                # Example: /vi-nsg/product/...-18935012413328-p10826
-                # We extract the sequence before "-p..."
-                # ---------------------------------------------------------
-                code = ""
-                if href:
-                    try:
-                        path = href.split("/")[-1]
-                        # path example: "thung-...-18935012413328-p10826"
-                        before_p = path.split("-p", maxsplit=1)[0]
-                        code = before_p.split("-")[-1].strip()
-                    except Exception:
-                        code = ""
-
-                # ---------------------------------------------------------
                 # Price after promotion (displayed price)
                 # ---------------------------------------------------------
                 price_after_text = ""
@@ -339,6 +325,8 @@ def crawl_lotte(headless: bool = True) -> List[Dict[str, Any]]:
                     capacity=capacity,
                     packing=packing,
                 )
+
+                code = make_unique_code("lotte", product_key, normalized_name)
 
                 product: Dict[str, Any] = {
                     "source": "lottemart",

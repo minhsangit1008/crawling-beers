@@ -39,6 +39,7 @@ from helpers import (
     make_product_key,
     normalize_name,
     build_chrome_driver,
+    make_unique_code,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -226,7 +227,6 @@ def crawl_mega(headless: bool = False) -> List[Dict[str, Any]]:
                 # -------------------------------------------------------------
                 # Code or note
                 # -------------------------------------------------------------
-                code = ""
                 note = ""
 
                 try:
@@ -235,10 +235,12 @@ def crawl_mega(headless: bool = False) -> List[Dict[str, Any]]:
                     ).text.strip()
 
                     if dnr_text:
-                        if re.fullmatch(r"[A-Za-z0-9]+", dnr_text):
-                            code = dnr_text
-                        else:
+                        # Nếu là chuỗi toàn chữ/số (SKU) thì bỏ qua, không dùng làm note
+                        if not re.fullmatch(r"[A-Za-z0-9]+", dnr_text):
                             note = dnr_text
+
+                except Exception:
+                    pass
 
                 except Exception:
                     pass
@@ -304,6 +306,9 @@ def crawl_mega(headless: bool = False) -> List[Dict[str, Any]]:
                     capacity=capacity,
                     packing=packing,
                 )
+
+                code = make_unique_code("mega", product_key, normalized_name)
+
 
                 products.append(
                     {

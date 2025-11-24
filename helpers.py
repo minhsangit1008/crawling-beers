@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import hashlib
 from typing import Optional
 
 from selenium import webdriver
@@ -19,7 +20,7 @@ BRANDS = [
     "Heineken",
     "Tiger",
     "Sài Gòn",
-    "Budweiser",
+    "Budweiser", 
     "Hoegaarden",
     "1664 Blanc",
     "Larue",
@@ -410,3 +411,18 @@ def make_product_key(
 
     parts = [p for p in (brand_part, cap_part, pack_part) if p]
     return "_".join(p.upper() for p in parts)
+
+def make_unique_code(source: str, product_key: str, normalized_name: str) -> str:
+    """
+    Create stable unique product code:
+    code = source + "_" + product_key + "_" + short SHA1 hash of normalized_name
+
+    - source: bhx, coop, mega, lotte, kingfood
+    - product_key: brand_capacity_packing
+    - normalized_name: cleaned no-accent name for stable hashing
+
+    SHA1(normalized_name)[:8] → stable + unique
+    """
+    base = normalized_name.encode("utf-8")
+    hash_part = hashlib.sha1(base).hexdigest()[:8]
+    return f"{source}_{product_key}_{hash_part}"
